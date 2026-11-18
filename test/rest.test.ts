@@ -9,6 +9,7 @@ function api(method: string, path: string, body?: unknown) {
 }
 test('REST writes real Git objects, checks stale SHAs, and isolates owners', () => {
   assert.equal(api('POST', '/user/repos', { name: 'project' }).status, 201);
+  assert.throws(() => api('POST', '/user/repos', { name: 'project' }), { status: 422, message: /already exists/i });
   const repo = '/repos/developer/project';
   const path = repo + '/contents/dir/file';
   const created = api('PUT', path, { content: 'aGk=', message: 'first' });

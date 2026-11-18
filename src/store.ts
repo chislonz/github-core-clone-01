@@ -131,7 +131,8 @@ export class Forge {
   find(id: string, kind: string) { const row = this.nodes.get(id); return row?.kind === kind ? row : missing(); }
   createRepo(data: Record<string, any>) {
     const name = text(data.name, 'name');
-    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || name === '.' || name === '..' || this.lookup(this.owner.login, name)) invalid('Invalid or duplicate repository name');
+    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || name === '.' || name === '..') invalid('Invalid repository name');
+    if (this.lookup(this.owner.login, name)) invalid('Repository already exists');
     const repo = new Repository(++this.nextId, this.owner, name, data);
     this.repos.set(name.toLowerCase(), repo);
     this.nodes.set(repo.info.node_id, { repo, kind: 'Repository', entity: repo });
