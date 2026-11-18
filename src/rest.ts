@@ -73,9 +73,20 @@ function contents(forge: Forge, repo: Repository, method: string, url: URL, part
   return ok({ content: { ...contentView(repo, path, entry, true) }, commit: { sha: commit } }, previous ? 200 : 201);
 }
 
+// HTTP request targets are immutable. Key by pathname so direct callers may still modify URLs.
+const decodedPaths = new Map<string, string[]>();
 export function rest(forge: Forge, method: string, url: URL, input?: unknown): Reply {
   const body = record(input);
-  const [api, version, area, owner, name, resource, ...parts] = pathSegments(url.pathname);
+  const pathname = url.pathname;
+  let decoded = decodedPaths.get(pathname);
+  if (!decoded) {
+    decoded = pathSegments(pathname);
+    if (pathname.length <= 512) {
+      if (decodedPaths.size === 256) decodedPaths.delete(decodedPaths.keys().next().value!);
+      decodedPaths.set(pathname, decoded);
+    }
+  }
+  const [api, version, area, owner, name, resource, ...parts] = decoded;
   if (api !== 'api' || version !== 'v3') return missing();
   const query = url.searchParams;
   if (!area && method === 'GET') return { ...ok({ current_user_url: `${url.origin}/api/v3/user`, current_user_repositories_url: `${url.origin}/api/v3/user/repos` }), headers: { 'X-OAuth-Scopes': 'repo, read:org' } };

@@ -20,6 +20,13 @@ function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
 }
 const parsedJson = (body: Buffer) => body.length ? JSON.parse(body.toString()) : undefined;
 const notFound = { status: 404, value: { message: 'Not Found' } };
+const gitRoute = /^\/([^/?]+)\/([^/?]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)(?:\?|$)/;
+
+function parseTarget(host: string, target: string) {
+  const url = new URL(target, `http://${host}`);
+  const match = gitRoute.exec(url.pathname);
+  return { url, git: match ? { owner: decodeURIComponent(match[1]), repo: decodeURIComponent(match[2]), route: match[3] } : undefined };
+}
 
 export function createForgeServer({ token, owner, now }: { token: string; owner: string; now?: string }) {
   if (!token) throw Error('A token is required');
@@ -27,18 +34,20 @@ export function createForgeServer({ token, owner, now }: { token: string; owner:
   const forge = new Forge(owner, time);
   const auth = `Bearer ${token}`;
   let serial = 0;
+  // Parsed request targets are immutable. Bound the cache by both entry count and URI size.
+  const targets = new Map<string, ReturnType<typeof parseTarget>>();
   return createServer({ noDelay: true, keepAliveTimeout: 10000 }, (req, res) => {
     const method = req.method ?? 'GET';
-    const matches = /^\/([^/?]+)\/([^/?]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)(?:\?|$)/.exec(req.url ?? '');
-    const requestId = (++serial).toString(16);
     res.sendDate = false;
     function json(reply: Reply) {
       const bytes = reply.serialized ?? (reply.value === undefined ? '' : JSON.stringify(reply.value));
-      res.statusCode = reply.status;
-      res.setHeader('X-GitHub-Request-Id', requestId);
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      if (reply.status !== 204) res.setHeader('Content-Length', Buffer.byteLength(bytes));
-      if (reply.headers) for (const [key, value] of Object.entries(reply.headers)) res.setHeader(key, value);
+      const headers: Record<string, string | number> = {
+        'X-GitHub-Request-Id': (++serial).toString(16),
+        'Content-Type': 'application/json; charset=utf-8',
+        ...reply.headers,
+      };
+      if (reply.status !== 204) headers['Content-Length'] = Buffer.byteLength(bytes);
+      res.writeHead(reply.status, headers);
       res.end(bytes);
     }
     function binary(res: ServerResponse, service: string, kind: string, bytes: Buffer) {
@@ -52,16 +61,28 @@ export function createForgeServer({ token, owner, now }: { token: string; owner:
       else { console.error(error); json({ status: 500, value: { message: 'Internal server error' } }); }
     }
     try {
-      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-      if (url.pathname === '/healthz' && method === 'GET') return json({ status: 200, value: { ok: true } });
+      const target = req.url ?? '/';
+      if (target === '/healthz' && method === 'GET') return json({ status: 200, value: { ok: true } });
       if (req.headers.authorization !== auth) {
         req.resume();
         return json({ status: 401, headers: { 'WWW-Authenticate': 'Bearer' }, value: { message: 'Bad credentials' } });
       }
-      if (matches) {
-        const repo = forge.lookup(decodeURIComponent(matches[1]), decodeURIComponent(matches[2]));
+      const host = req.headers.host ?? 'localhost';
+      const key = `${host}\0${target}`;
+      let parsed = key.length <= 512 ? targets.get(key) : undefined;
+      if (!parsed) {
+        parsed = parseTarget(host, target);
+        if (key.length <= 512) {
+          if (targets.size === 256) targets.delete(targets.keys().next().value!);
+          targets.set(key, parsed);
+        }
+      }
+      const { url, git } = parsed;
+      if (git) {
+        const repo = forge.lookup(git.owner, git.repo);
         if (!repo) { req.resume(); return json(notFound); }
-        const route = matches[3], isV2 = /(?:^|:)version=2(?:$|:)/.test(String(req.headers['git-protocol'] ?? ''));
+        const route = git.route, protocol = req.headers['git-protocol'];
+        const isV2 = protocol === 'version=2' || (typeof protocol === 'string' && /(?:^|:)version=2(?:$|:)/.test(protocol));
         if (route === 'info/refs' && method === 'GET') {
           const service = url.searchParams.get('service');
           if (service !== 'git-upload-pack' && service !== 'git-receive-pack') return json(notFound);
