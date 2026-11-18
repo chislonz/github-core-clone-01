@@ -14,7 +14,7 @@ export function graphql(store:Store,body:any):any {
  if(Array.isArray(body))return body.map(x=>graphql(store,x));
  try {
  const fields=parse(body.query,body.variables);const typed=(type:string,data:any)=>data==null?null:{...data,_type:type};
- const connection=(list:any[],a:any)=>{const start=a.after?Number(Buffer.from(a.after,'base64').toString()):0;const end=start+Math.max(0,Math.min(a.first??100,100));const nodes=list.slice(start,end);return{nodes,totalCount:list.length,pageInfo:{hasNextPage:end<list.length,endCursor:nodes.length?Buffer.from(String(start+nodes.length)).toString('base64'):null}};};
+ const connection=(list:any,a:any)=>{const values=list instanceof Map?[...list.values()]:Array.isArray(list)?list:[];const start=a.after?Number(Buffer.from(a.after,'base64').toString()):0;const end=start+Math.max(0,Math.min(a.first??100,100));const nodes=values.slice(start,end);return{nodes,totalCount:values.length,pageInfo:{hasNextPage:end<values.length,endCursor:nodes.length?Buffer.from(String(start+nodes.length)).toString('base64'):null}};};
  const resolve=(o:any,n:string,a:any):any=>{if(n==='__typename')return o._type;
  if(o._type==='Query'){
  if(n==='viewer')return typed('User',{login:store.owner});
@@ -28,9 +28,9 @@ export function graphql(store:Store,body:any):any {
  if(n==='addComment'){const x=store.nodes.get(input.subjectId);if(!x)throw Error('Unknown subject');const c=store.comment(x,input);return{commentEdge:{node:{id:c.node_id,body:c.body}}};}
  }
  if(o._type==='Repository'){
- if(n==='id')return o.node_id;if(n==='databaseId')return o.id;if(n==='nameWithOwner')return `${store.owner}/${o.name}`;if(n==='owner')return typed('User',{login:store.owner});if(n==='defaultBranchRef')return store.tip(o)?{name:o.default_branch}:null;if(n==='viewerPermission')return 'ADMIN';if(n==='hasIssuesEnabled')return true;
+ if(n==='id')return o.node_id;if(n==='databaseId')return o.id;if(n==='nameWithOwner')return `${store.owner}/${o.name}`;if(n==='owner')return typed('User',{login:store.owner});if(n==='defaultBranchRef')return store.tip(o)?typed('Ref',{name:o.default_branch}):null;if(n==='viewerPermission')return 'ADMIN';if(n==='hasIssuesEnabled')return true;
  if(n==='issue')return o.issues.get(a.number)||null;if(n==='pullRequest')return o.pulls.get(a.number)||null;
- if(n==='issues'||n==='pullRequests'){let list=[...(n==='issues'?o.issues:o.pulls).values()];if(a.states)list=list.filter(x=>a.states.includes(x.state.toUpperCase()));list.sort((x,y)=>a.orderBy?.direction==='DESC'?y.number-x.number:x.number-y.number);return connection(list,a);}
+ if(n==='issues'||n==='pullRequests'){let list=[...(n==='issues'?o.issues:o.pulls).values()];if(a.states)list=list.filter((x:any)=>a.states.includes(x.state.toUpperCase()));list.sort((x:any,y:any)=>a.orderBy?.direction==='DESC'?y.number-x.number:x.number-y.number);if(n==='pullRequests'){for(const x of list){x._type='PullRequest';x._repo=o;}}if(n==='issues'){for(const x of list)x._type='Issue';}return connection(list,a);}
  }
  if(o._type==='Issue'||o._type==='PullRequest'){if(n==='id')return o.node_id;if(n==='state')return o.merged?'MERGED':o.state.toUpperCase();if(n==='headRefName')return o.head.ref;if(n==='baseRefName')return o.base.ref;if(n==='mergeable')return 'MERGEABLE';if(n==='files')return connection(store.files(o),a);}
  if(Object.hasOwn(o,n))return o[n];throw Error(`Unknown field ${n} on ${o._type||'object'}`);
