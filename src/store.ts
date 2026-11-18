@@ -1,5 +1,5 @@
 import { ObjectDB, commitInfo, treeEntries, type TreeEntry } from './objects.ts';
-import { headRef, validRef } from './git-http.ts';
+import { headRef, invalidateGitViews, validRef } from './git-http.ts';
 
 export class Fault extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
 export const missing = (): never => { throw new Fault(404, 'Not Found'); };
@@ -80,6 +80,7 @@ export class Repository {
     const identity = `${login} <${login}@users.noreply.invalid> ${stamp} +0000`;
     const sha = this.db.put('commit', Buffer.from(`tree ${tree(root)}\n${parent ? `parent ${parent}\n` : ''}author ${identity}\ncommitter ${identity}\n\n${message}${message.endsWith('\n') ? '' : '\n'}`));
     this.refs.set(`refs/heads/${branch}`, sha);
+    invalidateGitViews(this);
     return sha;
   }
   mergeBase(base: string, head: string) { return [...this.db.ancestors([head])].find(oid => this.db.isAncestor(oid, base)); }

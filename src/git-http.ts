@@ -75,7 +75,10 @@ export function receive(repo: GitRepo, body: Buffer) {
     }
   } catch { unpackError = 'invalid pack'; }
   const report = [pkt(`unpack ${unpackError || 'ok'}\n`)];
-  if (!unpackError) repo.db.import(incoming);
+  if (!unpackError && incoming.size) {
+    repo.db.import(incoming);
+    invalidateGitViews(repo);
+  }
   for (const [old, next, ref] of commands) {
     const actual = repo.refs.get(ref) ?? ZERO;
     let why = unpackError ? 'unpacker error' : '';
@@ -86,6 +89,7 @@ export function receive(repo: GitRepo, body: Buffer) {
     if (!why) {
       if (next === ZERO) repo.refs.delete(ref);
       else repo.refs.set(ref, next);
+      invalidateGitViews(repo);
     }
     report.push(pkt(why ? `ng ${ref} ${why}\n` : `ok ${ref}\n`));
   }
@@ -132,9 +136,26 @@ function walk(repo: GitRepo, roots: string[], depth: number, stop: Set<string>) 
   return { objects, boundary };
 }
 
-type CachedFetch = { refs: string[]; result: Buffer };
-const fetchCache = new WeakMap<GitRepo, Map<string, CachedFetch>>();
+// Cache complete small v2 replies on immutable repository state. All ref and
+// object write paths invalidate them so names, tips, and negotiation stay fresh.
+const v2Views = new WeakMap<GitRepo, Map<string, Buffer>>();
+export function invalidateGitViews(repo: GitRepo) { v2Views.delete(repo); }
 export function upload(repo: GitRepo, body: Buffer, v2: boolean) {
+  if (!v2 || body.length > 1024) return buildUpload(repo, body, v2);
+  const key = body.toString('latin1');
+  let views = v2Views.get(repo);
+  const hit = views?.get(key);
+  if (hit) return hit;
+  const response = buildUpload(repo, body, v2);
+  if (response.length <= 256 * 1024) {
+    if (!views) { views = new Map(); v2Views.set(repo, views); }
+    if (views.size === 8) views.delete(views.keys().next().value!);
+    views.set(key, response);
+  }
+  return response;
+}
+
+function buildUpload(repo: GitRepo, body: Buffer, v2: boolean) {
   const lines: string[] = [];
   for (let p = 0; p < body.length;) {
     const packet = packetAt(body, p); p = packet.next;
@@ -151,12 +172,7 @@ export function upload(repo: GitRepo, body: Buffer, v2: boolean) {
   if (v2 && !lines.includes('done')) {
     return Buffer.concat([pkt('acknowledgments\n'), ...(have.length ? have.map(oid => pkt(`ACK ${oid}\n`)) : [pkt('NAK\n')]), flush]);
   }
-  // Cache only commonly repeated stateless responses for advertised tips, not arbitrary negotiation state.
-  const cacheable = v2 && !have.length && !shallow.size && want.length > 0 && want.length <= 4;
-  const key = cacheable ? `${depth}:${want.join('.')}` : '';
-  const cache = cacheable ? fetchCache.get(repo) ?? new Map<string, CachedFetch>() : undefined;
-  const saved = cache?.get(key);
-  if (saved && saved.refs.every((ref, i) => repo.refs.get(ref) === want[i])) return saved.result;
+
   const already = have.length ? walk(repo, have, Infinity, shallow).objects : undefined;
   const requested = walk(repo, want, depth, depth === Infinity ? shallow : new Set());
   const objects = [...requested.objects.values()].filter(obj => !already?.has(obj.oid));
@@ -172,14 +188,6 @@ export function upload(repo: GitRepo, body: Buffer, v2: boolean) {
     const cap = lines.find(line => line.startsWith('want '))?.split(' ').slice(2) ?? [];
     const prefix = [...(depthWord !== undefined ? [...changes, flush] : []), pkt(have.length ? `ACK ${have.at(-1)}\n` : 'NAK\n')];
     result = Buffer.concat([...prefix, ...(cap.includes('side-band-64k') ? [...sideband(pack), flush] : [pack])]);
-  }
-  if (cache && result.length <= 1024 * 1024) {
-    const advertised = [...repo.refs];
-    const refs = want.map(id => advertised.find(([, tip]) => tip === id)?.[0]);
-    if (refs.every((ref): ref is string => ref !== undefined)) {
-      if (cache.size === 8) cache.delete(cache.keys().next().value!);
-      cache.set(key, { refs, result }); fetchCache.set(repo, cache);
-    }
   }
   return result;
 }

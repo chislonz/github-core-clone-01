@@ -1,6 +1,6 @@
 import { Forge, Repository, Fault, missing, invalid, text, record } from './store.ts';
 import { commitInfo, isOid, treeEntries } from './objects.ts';
-import { validRef } from './git-http.ts';
+import { invalidateGitViews, validRef } from './git-http.ts';
 
 export type Reply = { status: number; value?: any; headers?: Record<string, string>; serialized?: string };
 const ok = (value: unknown, status = 200): Reply => ({ status, value });
@@ -120,7 +120,9 @@ export function rest(forge: Forge, method: string, url: URL, input?: unknown): R
     if (method === 'POST' && parts.length === 1) {
       const { ref, sha } = body;
       if (!validRef(ref) || !isOid(sha) || !repo.db.get(sha) || repo.refs.has(ref) || (ref.startsWith('refs/heads/') && repo.db.get(sha)?.kind !== 'commit')) return invalid('Invalid or duplicate ref');
-      repo.refs.set(ref, sha); return ok(refView(ref, sha, repo.db.get(sha)!.kind), 201);
+      repo.refs.set(ref, sha);
+      invalidateGitViews(repo);
+      return ok(refView(ref, sha, repo.db.get(sha)!.kind), 201);
     }
     if (method === 'GET' && parts.length > 1) { const sha = repo.refs.get(ref) ?? missing(); return ok(refView(ref, sha, repo.db.get(sha)!.kind)); }
   }
