@@ -36,11 +36,32 @@ export function createForgeServer({ token, owner, now }: { token: string; owner:
   let serial = 0;
   // Parsed request targets are immutable. Bound the cache by both entry count and URI size.
   const targets = new Map<string, ReturnType<typeof parseTarget>>();
+  // Cache only immutable serialized views, not mutable domain objects.
+  // Account for retained UTF-8/key sizes per server instance; this is not an RSS cap.
+  const encodedViews = new Map<string, Buffer>();
+  const encodedLimit = 1024 * 1024;
+  let encodedBytes = 0;
+  function viewBytes(serialized: string) {
+    const existing = encodedViews.get(serialized);
+    if (existing) return existing;
+    const bytes = Buffer.from(serialized);
+    const cost = bytes.length + serialized.length * 2 + 64;
+    if (cost <= 64 * 1024) {
+      while (encodedViews.size >= 64 || encodedBytes + cost > encodedLimit) {
+        const oldest = encodedViews.entries().next().value!;
+        encodedBytes -= oldest[1].length + oldest[0].length * 2 + 64;
+        encodedViews.delete(oldest[0]);
+      }
+      encodedViews.set(serialized, bytes);
+      encodedBytes += cost;
+    }
+    return bytes;
+  }
   return createServer({ noDelay: true, keepAliveTimeout: 10000 }, (req, res) => {
     const method = req.method ?? 'GET';
     res.sendDate = false;
     function json(reply: Reply) {
-      const bytes = reply.serialized ?? (reply.value === undefined ? '' : JSON.stringify(reply.value));
+      const bytes = reply.serialized === undefined ? (reply.value === undefined ? '' : JSON.stringify(reply.value)) : viewBytes(reply.serialized);
       const headers: Record<string, string | number> = {
         'X-GitHub-Request-Id': (++serial).toString(16),
         'Content-Type': 'application/json; charset=utf-8',
